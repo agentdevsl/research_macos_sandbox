@@ -1,0 +1,47 @@
+# Sandbox image with Node.js 20, SSH, and Claude CLI support
+FROM node:20-alpine
+
+# Install dependencies
+RUN apk add --no-cache \
+    openssh-server \
+    bash \
+    curl \
+    git \
+    python3 \
+    make \
+    g++
+
+# Configure SSH
+RUN mkdir -p /var/run/sshd \
+    && ssh-keygen -A \
+    && echo 'root:sandbox' | chpasswd \
+    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && echo 'PermitEmptyPasswords no' >> /etc/ssh/sshd_config
+
+# Create workspace directory
+RUN mkdir -p /workspace
+
+# Install Claude CLI globally (placeholder - actual install depends on availability)
+# For now, create a mock claude command for testing
+RUN mkdir -p /usr/local/bin && \
+    echo '#!/bin/bash' > /usr/local/bin/claude && \
+    echo 'if [ "$1" = "--version" ]; then echo "claude-cli 0.1.0 (mock)"; exit 0; fi' >> /usr/local/bin/claude && \
+    echo 'echo "Claude CLI mock - pass ANTHROPIC_API_KEY for real usage"' >> /usr/local/bin/claude && \
+    chmod +x /usr/local/bin/claude
+
+# Install pnpm globally for agent SDK projects
+RUN npm install -g pnpm@8
+
+# Set working directory
+WORKDIR /workspace
+
+# Expose SSH port
+EXPOSE 22
+
+# Create startup script
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+    echo 'exec /usr/sbin/sshd -D -e' >> /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

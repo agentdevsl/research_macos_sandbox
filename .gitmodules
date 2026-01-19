@@ -1,0 +1,3 @@
+[submodule "container-submodule"]
+	path = container-submodule
+	url = https://github.com/apple/container

@@ -1,0 +1,41 @@
+# Sandbox image with Node.js 22, Claude Code CLI, and Claude Agent SDK
+FROM node:22-slim
+
+# Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-server \
+    bash \
+    curl \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configure SSH
+RUN mkdir -p /var/run/sshd \
+    && ssh-keygen -A \
+    && echo 'root:sandbox' | chpasswd \
+    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+# Create workspace directory
+RUN mkdir -p /workspace
+
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code
+
+# Install Claude Agent SDK globally for testing
+RUN npm install -g @anthropic-ai/claude-agent-sdk
+
+# Verify installations
+RUN claude --version && node --version && npm --version
+
+# Set working directory
+WORKDIR /workspace
+
+# Expose SSH port
+EXPOSE 22
+
+# Create startup script
+RUN echo '#!/bin/bash\nexec /usr/sbin/sshd -D -e' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

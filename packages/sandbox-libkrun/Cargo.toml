@@ -1,0 +1,22 @@
+[package]
+name = "libkrun-node"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/native/lib.rs"
+
+[dependencies]
+napi = { version = "2", default-features = false, features = ["napi9", "async", "tokio_rt"] }
+napi-derive = "2"
+tokio = { version = "1", features = ["full"] }
+libc = "0.2"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+opt-level = 3

@@ -1,0 +1,41 @@
+# Full sandbox image with Claude CLI
+FROM node:20-alpine
+
+# Install dependencies
+RUN apk add --no-cache \
+    openssh-server \
+    bash \
+    curl \
+    git \
+    python3 \
+    make \
+    g++ \
+    jq
+
+# Configure SSH
+RUN mkdir -p /var/run/sshd \
+    && ssh-keygen -A \
+    && echo 'root:sandbox' | chpasswd \
+    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && echo 'PermitEmptyPasswords no' >> /etc/ssh/sshd_config
+
+# Create workspace directory
+RUN mkdir -p /workspace
+
+# Install global npm packages
+RUN npm install -g pnpm@8 @anthropic-ai/claude-code
+
+# Set working directory
+WORKDIR /workspace
+
+# Expose SSH port
+EXPOSE 22
+
+# Create startup script that also shows env vars are passed
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+    echo 'echo "Starting sandbox with $(env | grep -c ANTHROPIC) Anthropic env vars"' >> /entrypoint.sh && \
+    echo 'exec /usr/sbin/sshd -D -e' >> /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

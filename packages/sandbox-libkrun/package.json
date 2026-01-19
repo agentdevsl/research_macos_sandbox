@@ -1,0 +1,42 @@
+{
+  "name": "@sandbox/libkrun",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:native": "napi build --platform --release && tsc",
+    "build:debug": "napi build --platform && tsc",
+    "clean": "rm -rf dist target *.node",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "napi prepublish -t npm",
+    "artifacts": "napi artifacts"
+  },
+  "napi": {
+    "name": "libkrun",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "aarch64-apple-darwin"
+      ]
+    }
+  },
+  "dependencies": {
+    "@sandbox/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0",
+    "typescript": "^5.3.3",
+    "@types/node": "^20.11.0"
+  },
+  "engines": {
+    "node": ">= 20"
+  }
+}

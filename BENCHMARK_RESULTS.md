@@ -4,11 +4,11 @@
 
 This report presents quantified benchmark results for three macOS sandbox providers validated for running Claude Agent SDK and Claude Code CLI.
 
-| Provider | VM Startup | SSH Ready | Exec Latency | Agent SDK | Claude CLI | Isolation |
-|----------|------------|-----------|--------------|-----------|------------|-----------|
-| **BoxLite** | **257ms** | 1.6ms | **1.5ms** | ✅ Works | ✅ Works | Micro-VM |
-| **OrbStack** | 725ms | 1,174ms | 270ms | ✅ Works | ✅ Works | Container |
-| **Apple Container** | 1,150ms | N/A | 70ms | ✅ Works | ✅ Works | Full VM |
+| Provider | VM Startup | Exec Latency | Agent SDK | Claude CLI | Isolation |
+|----------|------------|--------------|-----------|------------|-----------|
+| **BoxLite** | **261ms** | **6.2ms** | ✅ 4.6s install | ✅ 2.9s install | Micro-VM |
+| **OrbStack** | 725ms | 12.6ms (SSH) | ✅ Works | ✅ Works | Container |
+| **Apple Container** | 1,150ms | 70ms | ✅ Works | ✅ Works | Full VM |
 
 **Recommendation**: BoxLite offers the best performance with micro-VM isolation.
 
@@ -16,7 +16,57 @@ This report presents quantified benchmark results for three macOS sandbox provid
 
 ## Detailed Benchmark Results
 
-### 1. OrbStack (Docker Containers)
+### 1. BoxLite (Micro-VMs) — WITH NPM WORKSPACE FIX
+
+**Provider Info:**
+- Version: 0.1.6
+- Isolation: Micro-VM (Apple Hypervisor.framework)
+- Kernel: Linux 6.12.62 (aarch64)
+- Features: hardware-vm, oci-images, volume-mounts, port-forwarding, fast-startup
+
+**Performance Metrics (20 iterations, 3 warmup):**
+
+| Metric | Mean | P50 | P95 | P99 | Min | Max |
+|--------|------|-----|-----|-----|-----|-----|
+| **Cold Startup** | 261.13ms | 263.28ms | 277.29ms | 283.41ms | 239.40ms | 283.41ms |
+| **Exec Latency** | 9.12ms | 6.18ms | 33.54ms | 36.83ms | 5.45ms | 36.83ms |
+| **SSH Exec Latency** | 10.89ms | 6.20ms | 28.95ms | 41.75ms | 5.24ms | 41.75ms |
+| **Node Invocation** | 11.04ms | 6.06ms | 52.50ms | 58.46ms | 5.60ms | 58.46ms |
+| **Claude CLI** | 8.96ms | 6.40ms | 29.17ms | 34.73ms | 5.54ms | 34.73ms |
+
+**Concurrent Instance Creation:**
+| Instances | Mean | P50 | P95 |
+|-----------|------|-----|-----|
+| 3 | 306.62ms | 304.00ms | 325.93ms |
+| 5 | 364.19ms | 360.14ms | 389.37ms |
+
+**Claude Agent SDK Validation:**
+| Component | Status | Time |
+|-----------|--------|------|
+| VM Startup | ✅ | 441ms |
+| Node.js v24.13.0 | ✅ | ~1s |
+| Agent SDK Install | ✅ | 4,606ms |
+| Agent SDK Load | ✅ | Verified |
+| Claude CLI Install | ✅ | 2,903ms |
+| Claude CLI Version | ✅ | 2.1.12 |
+
+**Agent SDK Exports Verified:**
+```
+query, tool, createSdkMcpServer,
+unstable_v2_prompt, unstable_v2_createSession, unstable_v2_resumeSession,
+AbortError, EXIT_REASONS, HOOK_EVENTS
+```
+
+**Async Generator API Verified:**
+```javascript
+const q = query({ prompt: 'test', options: { tools: [] } });
+// q.constructor.name === 'Query'
+// typeof q[Symbol.asyncIterator] === 'function' ✅
+```
+
+---
+
+### 2. OrbStack (Docker Containers)
 
 **Provider Info:**
 - Version: 29.1.3
@@ -41,44 +91,10 @@ This report presents quantified benchmark results for three macOS sandbox provid
 | 10 | 13,073ms | 13,060ms | 15,510ms |
 
 **Claude Agent SDK Validation:**
-- Package Install: 2s
+- Package Install: ~2s
 - SDK Version: 0.2.12
 - CLI Version: 2.1.12
 - Async Generator API: ✅ Working
-
----
-
-### 2. BoxLite (Micro-VMs)
-
-**Provider Info:**
-- Version: 0.1.6
-- Isolation: Micro-VM (Apple Hypervisor.framework)
-- Kernel: Linux 6.12.62 (aarch64)
-- Features: hardware-vm, oci-images, volume-mounts, port-forwarding, fast-startup
-
-**Performance Metrics (20 iterations):**
-
-| Metric | Mean | P50 | P95 | P99 |
-|--------|------|-----|-----|-----|
-| Cold Startup | **257.14ms** | 246.17ms | 350.59ms | 422ms |
-| SSH Ready | 1.64ms | 1.49ms | 2.13ms | 3.12ms |
-| Exec Latency | **1.49ms** | 1.41ms | 2.01ms | 2.89ms |
-| SSH Exec Latency | 1.60ms | 1.52ms | 2.07ms | 2.95ms |
-| Node.js Invocation | 45ms | 42ms | 58ms | 72ms |
-| Claude CLI Version | 38ms | 35ms | 52ms | 65ms |
-
-**Concurrent Instance Creation:**
-| Instances | Mean | P50 | P95 |
-|-----------|------|-----|-----|
-| 5 | 1,450ms | 1,380ms | 1,820ms |
-| 10 | 2,890ms | 2,750ms | 3,420ms |
-
-**Claude Agent SDK Validation:**
-- Package Install: 4,389ms
-- SDK Version: 0.2.12
-- CLI Version: 2.1.12
-- Async Generator API: ✅ Working
-- VM Memory: 2GB available
 
 ---
 
@@ -96,22 +112,19 @@ This report presents quantified benchmark results for three macOS sandbox provid
 |--------|------|-----|-----|
 | Cold Startup | 1,150ms | 1,110ms | 1,380ms |
 | Exec Latency (container exec) | 70.35ms | 71.79ms | 75.53ms |
-| SSH Ready | N/A* | N/A* | N/A* |
-
-*Note: SSH plugin not available in version 0.7.1. Use `container exec` instead.
 
 **Claude Agent SDK Validation:**
 - Package Install: ~2s
 - SDK Version: 0.2.12
 - CLI Version: 2.1.12
 - Async Generator API: ✅ Working
-- Network: Requires explicit DNS configuration
+- Note: Requires `--network default --dns 8.8.8.8` for API calls
 
 ---
 
-## Claude Agent SDK API Validation
+## Claude Agent SDK API
 
-All three providers successfully run the Claude Agent SDK using the correct async generator API:
+All three providers successfully run the Claude Agent SDK using the async generator API:
 
 ```typescript
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -145,7 +158,7 @@ for await (const message of agentQuery) {
 
 ---
 
-## Claude Code CLI Validation
+## Claude Code CLI
 
 All three providers successfully run Claude Code CLI:
 
@@ -165,17 +178,24 @@ claude -p "Your prompt" --max-turns 1 --output-format text
 ### Startup Performance
 
 ```
-BoxLite:         ████████░░░░░░░░░░░░░░░░░░  257ms  (fastest)
+BoxLite:         ██████░░░░░░░░░░░░░░░░░░░░  261ms  (fastest)
 OrbStack:        ██████████████████░░░░░░░░  725ms
 Apple Container: ██████████████████████████ 1150ms  (slowest)
 ```
 
-### Exec Latency
+### Exec Latency (P50)
 
 ```
-BoxLite:         █░░░░░░░░░░░░░░░░░░░░░░░░░  1.5ms  (fastest)
-Apple Container: ████████████████░░░░░░░░░░   70ms
-OrbStack:        ██████████████████████████  270ms  (slowest)
+BoxLite:         █░░░░░░░░░░░░░░░░░░░░░░░░░  6.2ms  (fastest)
+OrbStack SSH:    ██░░░░░░░░░░░░░░░░░░░░░░░░  12.6ms
+Apple Container: ████████████████░░░░░░░░░░  70ms   (slowest)
+```
+
+### Concurrent Scaling (5 instances)
+
+```
+BoxLite:         ████░░░░░░░░░░░░░░░░░░░░░░  364ms  (fastest)
+OrbStack:        ██████████████████████████  6588ms (slowest)
 ```
 
 ### Isolation Level
@@ -185,6 +205,34 @@ OrbStack:        █████████████████████
 | BoxLite | Micro-VM | High | Low |
 | Apple Container | Full VM | Highest | Medium |
 | OrbStack | Container | Medium | Medium |
+
+---
+
+## BoxLite NPM Workspace Fix
+
+BoxLite's Alpine rootfs is limited (~220MB). The provider now automatically configures npm to use the mounted `/workspace` volume:
+
+```typescript
+// Automatic configuration on sandbox creation
+await sandbox.initializeNpm();
+
+// Helper methods for package installation
+await sandbox.npmInstall('@anthropic-ai/claude-agent-sdk');      // local to /workspace
+await sandbox.npmInstall('@anthropic-ai/claude-code', true);     // global to /workspace/.npm-global
+
+// Run commands with npm PATH configured
+await sandbox.execWithNpmPath('claude --version');
+await sandbox.execWithNpmPath('cd /workspace && node app.js');
+```
+
+**Directory Structure:**
+```
+/workspace/                      # Mounted host volume
+├── node_modules/               # Local packages
+├── .npm-global/                # Global packages
+│   └── bin/                    # Global binaries (claude, etc.)
+└── package.json                # Created by npm init
+```
 
 ---
 
@@ -203,7 +251,7 @@ OrbStack:        █████████████████████
 | Component | Size |
 |-----------|------|
 | Alpine base image | ~7MB |
-| Node.js 22 | ~85MB |
+| Node.js 24 | ~85MB |
 | @anthropic-ai/claude-agent-sdk | ~72MB |
 | @anthropic-ai/claude-code | ~15MB |
 
@@ -215,7 +263,7 @@ OrbStack:        █████████████████████
 **OrbStack** - Good balance of ease-of-use and performance with familiar Docker tooling.
 
 ### For Production Workloads
-**BoxLite** - Best performance (257ms startup, 1.5ms exec) with micro-VM isolation.
+**BoxLite** - Best performance (261ms startup, 6.2ms exec) with micro-VM isolation. Use the npm workspace fix for package management.
 
 ### For Maximum Security
 **Apple Container** - Full VM isolation with Apple-supported implementation (macOS 26+ only).

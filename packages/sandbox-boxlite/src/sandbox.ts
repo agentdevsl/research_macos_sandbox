@@ -11,6 +11,8 @@ interface BoxLiteSandboxOptions {
   sshPort: number;
   mountPath: string;
   startupMs: number;
+  /** Initialize npm to use /workspace for packages (avoids rootfs space issues) */
+  initializeNpm?: boolean;
 }
 
 /**
@@ -28,6 +30,8 @@ export class BoxLiteSandbox implements ISandbox {
   private readonly instance: SimpleBoxInstance;
   private boxId: string | null = null;
   private stopped = false;
+  private npmInitialized = false;
+  private initializeNpmOnStart: boolean;
   private metrics: SandboxMetrics;
 
   constructor(options: BoxLiteSandboxOptions) {
@@ -35,12 +39,74 @@ export class BoxLiteSandbox implements ISandbox {
     this.instance = options.instance;
     this.sshPort = options.sshPort;
     this.mountPath = options.mountPath;
+    this.initializeNpmOnStart = options.initializeNpm ?? true;
     this.metrics = {
       startupMs: options.startupMs,
       sshReadyMs: 0,
       execLatencyMs: 0,
       memoryBytes: 0,
     };
+  }
+
+  /**
+   * Initialize npm to use /workspace for packages.
+   * This avoids disk space issues on the limited Alpine rootfs (~220MB).
+   *
+   * Creates:
+   * - /workspace/node_modules for local packages
+   * - /workspace/.npm-global for global packages
+   * - Configures npm prefix and PATH
+   */
+  async initializeNpm(): Promise<void> {
+    if (this.npmInitialized) return;
+
+    try {
+      // Create directories
+      await this.instance.exec('mkdir', '-p', '/workspace/node_modules');
+      await this.instance.exec('mkdir', '-p', '/workspace/.npm-global/bin');
+
+      // Configure npm to use /workspace for global packages
+      await this.instance.exec('npm', 'config', 'set', 'prefix', '/workspace/.npm-global');
+
+      // Add global bin to PATH in profile
+      await this.instance.exec('sh', '-c',
+        'echo \'export PATH=/workspace/.npm-global/bin:$PATH\' >> /etc/profile');
+
+      // Also set for current session via environment
+      await this.instance.exec('sh', '-c',
+        'echo \'export NPM_CONFIG_PREFIX=/workspace/.npm-global\' >> /etc/profile');
+
+      this.npmInitialized = true;
+    } catch (err) {
+      // npm might not be installed yet, that's OK
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes('not found')) {
+        console.warn('Failed to initialize npm workspace:', message);
+      }
+    }
+  }
+
+  /**
+   * Execute a command with npm PATH configured.
+   * Use this for npm/node commands to ensure global packages are found.
+   */
+  async execWithNpmPath(cmd: string): Promise<ExecResult> {
+    const wrappedCmd = `export PATH=/workspace/.npm-global/bin:$PATH && ${cmd}`;
+    return this.exec('sh', ['-c', wrappedCmd]);
+  }
+
+  /**
+   * Install an npm package (handles workspace configuration automatically).
+   * @param pkg Package name (e.g., '@anthropic-ai/claude-agent-sdk')
+   * @param global Install globally (to /workspace/.npm-global)
+   */
+  async npmInstall(pkg: string, global = false): Promise<ExecResult> {
+    await this.initializeNpm();
+    const globalFlag = global ? '-g' : '';
+    const cmd = global
+      ? `export PATH=/workspace/.npm-global/bin:$PATH && npm install ${globalFlag} ${pkg}`
+      : `cd /workspace && npm install ${pkg}`;
+    return this.exec('sh', ['-c', cmd]);
   }
 
   async exec(cmd: string, args: string[] = []): Promise<ExecResult> {
@@ -51,6 +117,11 @@ export class BoxLiteSandbox implements ISandbox {
         stderr: 'Sandbox has been stopped',
         durationMs: 0,
       };
+    }
+
+    // Auto-initialize npm on first exec if enabled and npm is available
+    if (this.initializeNpmOnStart && !this.npmInitialized && cmd !== 'true') {
+      await this.initializeNpm();
     }
 
     const startTime = performance.now();

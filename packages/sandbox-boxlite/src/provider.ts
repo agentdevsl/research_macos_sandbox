@@ -1,3 +1,4 @@
+import { mkdir } from 'node:fs/promises';
 import type {
   ISandboxProvider,
   ISandbox,
@@ -80,6 +81,9 @@ export class BoxLiteProvider implements ISandboxProvider {
 
     // Add volume mount if mountPath specified
     if (config.mountPath) {
+      // Ensure mount path exists on host
+      await mkdir(config.mountPath, { recursive: true });
+
       boxOptions.volumes = [{
         hostPath: config.mountPath,
         guestPath: '/workspace',

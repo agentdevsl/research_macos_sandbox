@@ -25,7 +25,8 @@ export class OrbStackProvider implements ISandboxProvider {
 
   async create(config: SandboxConfig): Promise<ISandbox> {
     const image = config.image || DEFAULT_IMAGE;
-    const sshPort = config.sshPort || 2222;
+    // Use 0 to let Docker assign a random available port, or use specified port
+    const requestedPort = config.sshPort ?? 0;
 
     // Create container with bind mount and port mapping
     // Use tail -f /dev/null to keep container running (standard Docker pattern)
@@ -37,9 +38,9 @@ export class OrbStackProvider implements ISandboxProvider {
       Env: Object.entries(config.env || {}).map(([k, v]) => `${k}=${v}`),
       HostConfig: {
         Binds: [`${config.mountPath}:/workspace`],
-        PortBindings: {
-          '22/tcp': [{ HostPort: String(sshPort) }],
-        },
+        PortBindings: requestedPort > 0
+          ? { '22/tcp': [{ HostPort: String(requestedPort) }] }
+          : { '22/tcp': [{ HostPort: '' }] },  // Empty string = random port
         Memory: config.memoryMib ? config.memoryMib * 1024 * 1024 : undefined,
         NanoCpus: config.cpus ? config.cpus * 1e9 : undefined,
         AutoRemove: false,
@@ -53,6 +54,13 @@ export class OrbStackProvider implements ISandboxProvider {
     const startTime = performance.now();
     await container.start();
     const startupMs = performance.now() - startTime;
+
+    // Get the actual assigned SSH port from the container
+    const inspection = await container.inspect();
+    const portBindings = inspection.NetworkSettings?.Ports?.['22/tcp'];
+    const actualSshPort = portBindings?.[0]?.HostPort
+      ? parseInt(portBindings[0].HostPort, 10)
+      : (requestedPort || 2222);
 
     // Build user config if provided (with default uid/gid of 1000)
     const runAsUser = config.user
@@ -69,7 +77,7 @@ export class OrbStackProvider implements ISandboxProvider {
         ? {
             id: config.id,
             container,
-            sshPort,
+            sshPort: actualSshPort,
             mountPath: config.mountPath,
             startupMs,
             runAsUser,
@@ -77,7 +85,7 @@ export class OrbStackProvider implements ISandboxProvider {
         : {
             id: config.id,
             container,
-            sshPort,
+            sshPort: actualSshPort,
             mountPath: config.mountPath,
             startupMs,
           }

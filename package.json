@@ -25,5 +25,10 @@
     "node": ">=20.0.0",
     "pnpm": ">=8.0.0"
   },
-  "packageManager": "pnpm@8.15.1"
+  "packageManager": "pnpm@8.15.1",
+  "dependencies": {
+    "@docker/node-sdk": "^0.0.17",
+    "@types/dockerode": "^4.0.0",
+    "dockerode": "^4.0.9"
+  }
 }

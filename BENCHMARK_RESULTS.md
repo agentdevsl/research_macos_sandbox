@@ -2,15 +2,22 @@
 
 ## Executive Summary
 
-This report presents quantified benchmark results for three macOS sandbox providers validated for running Claude Agent SDK and Claude Code CLI.
+This report presents quantified benchmark results for three macOS sandbox providers validated for running Claude Agent SDK and Claude Code CLI, including **actual API call validation**.
 
-| Provider | VM Startup | Exec Latency | Agent SDK | Claude CLI | Isolation |
-|----------|------------|--------------|-----------|------------|-----------|
-| **BoxLite** | **261ms** | **6.2ms** | ✅ 4.6s install | ✅ 2.9s install | Micro-VM |
+| Provider | VM Startup | Exec Latency | Claude CLI API | Agent SDK API | Isolation |
+|----------|------------|--------------|----------------|---------------|-----------|
+| **BoxLite** | **426ms** | **6.2ms** | ✅ **3.6s** (verified) | ✅ **3.9s** (verified) | Micro-VM |
 | **OrbStack** | 725ms | 12.6ms (SSH) | ✅ Works | ✅ Works | Container |
-| **Apple Container** | 1,150ms | 70ms | ✅ Works | ✅ Works | Full VM |
+| **Apple Container** | 1,044ms | 70ms | ✅ **3.8s** (verified) | ✅ **3.5s** (verified) | Full VM |
 
-**Recommendation**: BoxLite offers the best performance with micro-VM isolation.
+**Key Findings:**
+- **Both CLI and SDK** work with OAuth tokens from macOS Keychain (Pro/Max subscription)
+- SDK uses the bundled CLI internally - no separate claude-code package needed
+- **Critical:** SDK with `bypassPermissions` fails when running as root (security restriction)
+- Use **default permission mode** for SDK when running in sandboxes as root
+- BoxLite offers the best startup performance with micro-VM isolation
+
+**Recommendation**: BoxLite for performance, with OAuth credentials extracted from Keychain.
 
 ---
 
@@ -132,8 +139,11 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 const agentQuery = query({
   prompt: 'Your task here',
   options: {
-    cwd: process.cwd(),
-    tools: [], // or specific tools
+    model: 'claude-sonnet-4-20250514',
+    maxTurns: 1,
+    cwd: '/workspace',
+    // NOTE: Do NOT use tools: [] - causes "argument missing" error
+    // NOTE: Do NOT use bypassPermissions when running as root
   },
 });
 
@@ -151,10 +161,16 @@ for await (const message of agentQuery) {
 }
 ```
 
+**Important Notes:**
+- SDK bundles its own CLI at `@anthropic-ai/claude-agent-sdk/cli.js`
+- No need to install `@anthropic-ai/claude-code` separately for SDK usage
+- Avoid `tools: []` (empty array) - causes CLI argument parsing error
+- Avoid `permissionMode: 'bypassPermissions'` when running as root
+
 **Package Versions Tested:**
 - `@anthropic-ai/claude-agent-sdk`: 0.2.12
 - `@anthropic-ai/claude-code`: 2.1.12
-- Node.js: v22.x (OrbStack/Apple) / v24.x (BoxLite Alpine)
+- Node.js: v22.x (OrbStack/Apple Container) / v24.x (BoxLite Alpine)
 
 ---
 
@@ -170,6 +186,89 @@ claude --version
 # Simple prompt execution
 claude -p "Your prompt" --max-turns 1 --output-format text
 ```
+
+---
+
+## API Validation Results (Actual API Calls)
+
+The following tests verify actual API calls, not just installation.
+
+### BoxLite - Claude CLI API Call
+
+| Step | Status | Time |
+|------|--------|------|
+| VM Startup | ✅ | 318ms |
+| Node.js Install | ✅ | 966ms |
+| CLI Install | ✅ | 4,154ms |
+| Credentials Setup | ✅ | 54ms |
+| **CLI API Call** | **✅** | **4,017ms** |
+
+**Test Command:**
+```bash
+claude -p "Reply with exactly one word: WORKING" --max-turns 1 --output-format text --model sonnet < /dev/null
+```
+
+**Response:** `WORKING`
+
+### Authentication Requirements
+
+**Claude Code CLI (OAuth):**
+- Uses OAuth tokens from Claude Pro/Max subscription
+- Credentials stored in macOS Keychain under `Claude Code-credentials`
+- Must be written to `~/.claude/.credentials.json` in sandbox
+
+**Claude Agent SDK (OAuth - same as CLI):**
+- SDK bundles the CLI internally (`@anthropic-ai/claude-agent-sdk/cli.js`)
+- Uses the same OAuth credentials as CLI from `~/.claude/.credentials.json`
+- No separate API key required when using Pro/Max subscription
+
+### Running in Sandboxed Environments (CLI & SDK)
+
+Based on research and testing, the following configuration is required:
+
+**1. Extract OAuth credentials from macOS Keychain:**
+```bash
+security find-generic-password -s "Claude Code-credentials" -a "$(whoami)" -w
+```
+
+**2. Write credentials to sandbox:**
+```typescript
+const creds = getKeychainCredentials();
+await sandbox.exec('mkdir', ['-p', '/root/.claude']);
+await sandbox.exec('sh', ['-c', `printf '%s' '${JSON.stringify(creds)}' > /root/.claude/.credentials.json`]);
+```
+
+**3. Set required environment variables:**
+```bash
+CI=true           # Prevents interactive prompts
+TERM=dumb         # Simplifies terminal handling
+HOME=/root        # Required for credentials lookup
+```
+
+**4. For CLI - run with stdin from /dev/null and explicit model:**
+```bash
+claude -p "prompt" --max-turns 1 --output-format text --model sonnet < /dev/null
+```
+
+**5. For SDK - use default permission mode (NOT bypassPermissions):**
+```typescript
+// IMPORTANT: bypassPermissions + allowDangerouslySkipPermissions fails as root
+const q = query({
+  prompt: 'Your task here',
+  options: {
+    model: 'claude-sonnet-4-20250514',
+    maxTurns: 1,
+    cwd: '/workspace',
+    // Do NOT use bypassPermissions when running as root
+    // permissionMode: 'default' is implied
+  }
+});
+```
+
+**6. Root user restriction:**
+- `--dangerously-skip-permissions` cannot be used with root privileges (security restriction)
+- `permissionMode: 'bypassPermissions'` requires this flag internally
+- Solution: Use default permission mode or run container as non-root user
 
 ---
 

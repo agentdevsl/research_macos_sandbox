@@ -1,16 +1,73 @@
 # Sandbox Provider Benchmark Results
 
-**Date:** 2026-01-20
+**Date:** 2026-01-20 (Updated with Docker VMM)
 **Test:** Claude Agent SDK + Claude Code CLI with subscription OAuth token
+**Docker Engine:** Docker VMM (Virtual Machine Monitor)
 
 ## Summary
 
-| Provider | SDK | CLI | Startup | 5 Concurrent | Memory/Instance |
-|----------|-----|-----|---------|--------------|-----------------|
-| **Docker Direct** | ✅ | ✅ | 198ms | ✅ 24s | 17 MB |
-| **OrbStack** | ✅ | ✅ | 131ms | ✅ 40s | 146 MB |
-| **BoxLite** | ✅ | ❌ | 423ms | ❌ | ~150 MB |
-| **AppleContainer** | ✅ | ❌ | 4643ms | ✅ 52s | N/A |
+### Fair Comparison (Same Image: `docker/sandbox-templates:claude-code`)
+
+#### SDK-based (Recommended)
+
+| Provider | Startup | Prompt | E2E* | Memory | Isolation | Result |
+|----------|---------|--------|------|--------|-----------|--------|
+| **Docker*** | **137ms** | 3243ms | **3559ms** | 3 MB | Container | ✅ |
+| **Apple Container** | 1402ms | 3703ms | 5351ms | N/A | Full VM | ✅ |
+| **BoxLite** | 1216ms | 4159ms | 6701ms | N/A | Micro-VM | ✅ |
+
+*Works with Docker Desktop, OrbStack, or any Docker-compatible runtime via dockerode SDK
+
+#### CLI-based (Legacy)
+
+| Provider | Startup | Prompt | E2E* | Memory | Isolation | Result |
+|----------|---------|--------|------|--------|-----------|--------|
+| **Docker Direct** | 252ms | 3831ms | 4608ms | 2 MB | Container | ✅ |
+| **BoxLite** | 811ms | 3780ms | 5627ms | N/A | Micro-VM | ✅ |
+| **Docker Sandbox** | 1458ms | 3982ms | 5965ms | 58 MB | Container | ✅ |
+| **Apple Container** | 1437ms | 4414ms | 6134ms | N/A | Full VM | ✅ |
+| **Devcontainer** | 1022ms | 4174ms | 7867ms | 2 MB | Container | ✅ |
+
+*E2E = End-to-end time from container start to first successful API response
+
+**Resource Configuration:**
+- Docker/Devcontainer: No explicit limits (use host resources)
+- BoxLite/Apple Container: 4GB RAM, 4 CPUs (micro-VMs require explicit allocation)
+- Docker Engine: Docker VMM (Virtual Machine Monitor)
+
+**SDK vs CLI Performance:**
+- Docker with **dockerode SDK is ~25% faster** than CLI (3.6s vs 4.6s E2E)
+- SDK eliminates process spawn overhead for each Docker command
+
+**Notes:**
+- All providers use the same pre-built image with Claude Code installed
+- **Docker (dockerode SDK) is fastest at 3.6s E2E** - use this for container isolation
+- Apple Container (5.4s E2E) provides full VM isolation with good performance
+- BoxLite (6.7s E2E) provides micro-VM isolation but slower than Apple Container
+- **Docker Sandbox/Devcontainer provide NO additional isolation** - avoid these
+- BoxLite requires `user` option and full path to claude binary
+- claude-code image runs as `agent` user by default (no user switching needed for Docker)
+
+### Full Provider Comparison
+
+| Provider | SDK | CLI | E2E (SDK) | E2E (CLI) | Isolation | Notes |
+|----------|-----|-----|-----------|-----------|-----------|-------|
+| **Docker*** | ✅ | ✅ | **3.6s** | 4.6s | Container | Fastest, use dockerode SDK |
+| **Apple Container** | ✅ | ✅ | 5.4s | 6.1s | Full VM | Best isolation/performance ratio |
+| **BoxLite** | ✅ | ✅ | 6.7s | 5.6s | Micro-VM | Separate kernel via libkrun |
+| **Docker Sandbox** | N/A | ✅ | N/A | 6.0s | Container | Avoid - no security benefit |
+| **Devcontainer** | N/A | ✅ | N/A | 7.9s | Container | Avoid - slowest, no security benefit |
+
+*Docker provider (OrbStackProvider) works with any Docker-compatible runtime: Docker Desktop, OrbStack, Colima, etc.
+
+**Isolation Levels:**
+- **Container** (Docker Direct/Sandbox/Devcontainer): Namespace isolation, shared host kernel. No additional security in Docker Sandbox or Devcontainer vs plain Docker.
+- **Micro-VM** (BoxLite): Lightweight VM with separate kernel via libkrun/KVM. Hardware-level isolation.
+- **Full VM** (Apple Container): Complete VM with full kernel separation. Strongest security boundary.
+
+**CLI Workarounds Required:**
+- BoxLite: Use full path `/home/agent/.local/bin/claude` and stdin fix `echo "" | claude ...`
+- Apple Container: Use stdin fix `echo "" | claude ...`
 
 ## Detailed Results
 
@@ -48,12 +105,12 @@ Image: alpine:latest
 
 ### BoxLite (libkrun Micro-VM)
 
-**SDK works, CLI hangs**
+**SDK works, CLI works with stdin fix**
 
 - **Startup:** 423ms
 - **SDK Test:** ✅ SUCCESS (exec: 20s - slower than OrbStack)
-- **CLI Test:** ❌ FAILED (hangs/times out at 120s)
-- **5 Concurrent:** ❌ FAILED (0/5 succeeded)
+- **CLI Test:** ✅ SUCCESS (with stdin workaround, exec: 4s)
+- **5 Concurrent:** ✅ SUCCESS (with stdin workaround)
 - **Memory:** ~150 MB per instance
 
 ```
@@ -61,15 +118,22 @@ Provider: boxlite v0.1.6
 Image: alpine:latest
 ```
 
-**Note:** The CLI appears to hang when called through BoxLite's exec mechanism. The SDK works but is significantly slower than OrbStack. Concurrent SDK calls all fail (possibly rate limiting).
+**Root Cause:** BoxLite's exec keeps stdin open, causing Claude CLI to wait indefinitely.
+
+**Fix:** Pipe empty input to close stdin:
+```bash
+echo "" | claude -p "prompt" --output-format text
+```
+
+**Note:** The SDK works but is slower than Docker-based providers. With the stdin fix, CLI also works.
 
 ### Apple Container (macOS 26+ Native)
 
-**SDK works, CLI hangs, slowest startup**
+**SDK works, CLI works with stdin fix**
 
-- **Startup:** 4643ms (slowest - full VM boot)
+- **Startup:** 1607ms (VM boot)
 - **SDK Test:** ✅ SUCCESS (exec: 7.9s)
-- **CLI Test:** ❌ FAILED (hangs/times out at 120s)
+- **CLI Test:** ✅ SUCCESS (with stdin workaround, exec: 3.7s)
 - **5 Concurrent:** ✅ SUCCESS (total: 52s, avg startup: 4.7s)
 - **Memory:** N/A (stats not available)
 
@@ -78,7 +142,45 @@ Provider: container CLI v0.7.1
 Image: node:22-slim
 ```
 
-**Note:** The long startup time is expected for a full VM. Concurrent instances work well despite high startup time.
+**Note:** Same stdin issue as BoxLite - use `echo "" | claude -p ...` to fix. Startup time varies (1.6s - 4.6s).
+
+### Docker Sandbox (Official Docker AI Feature)
+
+**Pre-configured Claude environment - convenience wrapper only, no additional isolation**
+
+- **Startup:** 1387ms (sandbox container setup)
+- **E2E:** 6736ms (start to first successful response)
+- **SDK Test:** N/A (sandbox pre-configures Claude, no SDK access)
+- **CLI Test:** ✅ SUCCESS (with `settings.json` bypassPermissions)
+  - Simple prompt: ✅ SUCCESS (3.9s)
+  - File creation: ✅ SUCCESS (6.7s)
+  - Code execution: ✅ SUCCESS (10.4s)
+- **5 Concurrent:** ✅ SUCCESS (total: 18s, avg startup: 1.5s)
+- **Memory:** N/A (stats not accessible)
+
+```
+Docker Sandbox: docker sandbox run claude
+Claude Version: 2.1.12 (pre-installed)
+User: /home/agent (pre-configured)
+```
+
+**Note:** Docker Sandbox is a convenience wrapper, NOT a security enhancement. It provides no additional isolation over plain Docker (same SecurityOpt, CapDrop, no seccomp profile, no AppArmor).
+
+**What Docker Sandbox provides:**
+- Pre-configured Claude environment (no Node.js/npm setup needed)
+- Automatic workspace mounting
+- Persistent data volume at `/mnt/claude-data`
+- Uses `/home/agent` user and workspace
+
+**What Docker Sandbox does NOT provide:**
+- No additional security over plain Docker
+- No seccomp profile, no dropped capabilities
+- No resource limits by default
+- No network isolation
+
+**Configuration:**
+- Auth via credentials file (written via host mount)
+- Bypass permissions via `settings.json` with `{"permissions":{"defaultMode":"bypassPermissions"}}`
 
 ## Authentication Method
 
@@ -100,18 +202,52 @@ All providers configured with:
 
 ## Recommendations
 
-1. **For production use:** OrbStack (fastest, most reliable)
-2. **For VM isolation:** Apple Container (slower but full VM)
-3. **BoxLite:** SDK-only workloads (CLI has issues)
+1. **For fastest E2E (container isolation):** Docker with dockerode SDK (3.6s) - use OrbStackProvider
+2. **For full VM isolation:** Apple Container (5.4s E2E with SDK, best isolation/performance ratio)
+3. **For micro-VM isolation:** BoxLite (6.7s E2E with SDK, separate kernel via libkrun)
+4. **Avoid:** Docker Sandbox and Devcontainer - no security benefit over plain Docker, just overhead
+
+**Security Recommendation:** For running untrusted agent-generated code, use **Apple Container** (best isolation with good performance) or BoxLite. Docker-based options share the host kernel.
+
+**Implementation Recommendation:** Use **dockerode SDK** instead of CLI commands for ~25% faster performance.
 
 ## Test Files
 
-- `benchmark-all-providers.mjs` - Main benchmark script
+- `benchmark-providers-sdk.mjs` - **SDK-based benchmark (recommended) - uses dockerode for Docker**
+- `benchmark-fair-all-providers.mjs` - CLI-based fair comparison using same image for ALL providers
+- `benchmark-devcontainer.mjs` - Devcontainer CLI benchmark
+- `benchmark-dockerode.mjs` - Standalone dockerode benchmark
+- `benchmark-fair-comparison.mjs` - Fair comparison (Docker Direct, OrbStack, Docker Sandbox)
+- `benchmark-all-providers.mjs` - Full benchmark script (BoxLite, OrbStack, AppleContainer)
+- `benchmark-docker-direct.mjs` - Docker CLI baseline benchmark
+- `benchmark-docker-sandbox.mjs` - Docker Sandbox (official AI feature) benchmark
+- `benchmark-memory.mjs` - Memory usage benchmark
 - `test-sdk-with-credsfile.mjs` - SDK test template
-- `test-sdk-orbstack.mjs` - OrbStack-specific test
-- `test-sdk-apple-container.mjs` - Apple Container test
 
 ## Raw Results
+
+### Fair Comparison (Same Image - All Providers, Docker VMM)
+
+```json
+{
+  "image": "docker/sandbox-templates:claude-code",
+  "dockerEngine": "Docker VMM (Virtual Machine Monitor)",
+  "resourceConfig": {
+    "dockerDirect": "no limits (host resources)",
+    "dockerSandbox": "no limits (host resources)",
+    "devcontainer": "no limits (host resources)",
+    "boxLite": "4GB RAM, 4 CPUs",
+    "appleContainer": "4GB RAM, 4 CPUs"
+  },
+  "DockerDirect": { "startupMs": 252, "promptMs": 3831, "e2eMs": 4608, "memoryMb": 2, "success": true },
+  "BoxLite": { "startupMs": 811, "promptMs": 3780, "e2eMs": 5627, "memoryMb": null, "success": true },
+  "DockerSandbox": { "startupMs": 1458, "promptMs": 3982, "e2eMs": 5965, "memoryMb": 58, "success": true },
+  "AppleContainer": { "startupMs": 1437, "promptMs": 4414, "e2eMs": 6134, "memoryMb": null, "success": true },
+  "Devcontainer": { "startupMs": 1022, "promptMs": 4174, "e2eMs": 7867, "memoryMb": 2, "success": true }
+}
+```
+
+### Full Provider Results (with setup)
 
 ```json
 {
@@ -134,6 +270,12 @@ All providers configured with:
     "sdk": { "success": true, "startupMs": 4643, "execMs": 7945 },
     "cli": { "success": false, "startupMs": 1449, "execMs": 120105 },
     "concurrent": { "success": true, "instances": 5, "totalMs": 52105 }
+  },
+  "DockerSandbox": {
+    "sdk": null,
+    "e2eMs": 6736,
+    "cli": { "success": true, "startupMs": 1387, "promptMs": 3892, "fileCreateMs": 6695, "codeExecMs": 10429 },
+    "concurrent": { "success": true, "instances": 5, "totalMs": 17995, "avgStartupMs": 1520 }
   }
 }
 ```

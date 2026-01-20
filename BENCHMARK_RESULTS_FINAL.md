@@ -1,8 +1,9 @@
 # Sandbox Provider Benchmark Results
 
-**Date:** 2026-01-20 (Updated with Docker VMM)
+**Date:** 2026-01-20
 **Test:** Claude Agent SDK + Claude Code CLI with subscription OAuth token
-**Docker Engine:** Docker VMM (Virtual Machine Monitor)
+**Docker Runtime:** Docker Desktop v29.1.3 (VMM backend)
+**SDK:** dockerode (for Docker provider)
 
 ## Summary
 
@@ -16,7 +17,7 @@
 | **Apple Container** | 1402ms | 3703ms | 5351ms | N/A | Full VM | ✅ |
 | **BoxLite** | 1216ms | 4159ms | 6701ms | N/A | Micro-VM | ✅ |
 
-*Works with Docker Desktop, OrbStack, or any Docker-compatible runtime via dockerode SDK
+*Tested with Docker Desktop v29.1.3. Works with any Docker-compatible runtime via dockerode SDK.
 
 #### CLI-based (Legacy)
 
@@ -58,7 +59,7 @@
 | **Docker Sandbox** | N/A | ✅ | N/A | 6.0s | Container | Avoid - no security benefit |
 | **Devcontainer** | N/A | ✅ | N/A | 7.9s | Container | Avoid - slowest, no security benefit |
 
-*Docker provider (OrbStackProvider) works with any Docker-compatible runtime: Docker Desktop, OrbStack, Colima, etc.
+*Docker provider uses dockerode SDK. Tested with Docker Desktop v29.1.3.
 
 **Isolation Levels:**
 - **Container** (Docker Direct/Sandbox/Devcontainer): Namespace isolation, shared host kernel. No additional security in Docker Sandbox or Devcontainer vs plain Docker.
@@ -88,9 +89,9 @@ Image: alpine:latest
 
 **Note:** Direct docker CLI benchmark for comparison. Uses same authentication method (credentials file via host mount).
 
-### OrbStack (Docker Container)
+### OrbStack (Docker Container) - Historical
 
-**Best overall performance - all tests pass**
+**Note:** This was from earlier testing with OrbStack. Current tests use Docker Desktop.
 
 - **Startup:** 131ms (fastest)
 - **SDK Test:** ✅ SUCCESS (exec: 3.8s)
@@ -202,7 +203,7 @@ All providers configured with:
 
 ## Recommendations
 
-1. **For fastest E2E (container isolation):** Docker with dockerode SDK (3.6s) - use OrbStackProvider
+1. **For fastest E2E (container isolation):** Docker with dockerode SDK (3.6s)
 2. **For full VM isolation:** Apple Container (5.4s E2E with SDK, best isolation/performance ratio)
 3. **For micro-VM isolation:** BoxLite (6.7s E2E with SDK, separate kernel via libkrun)
 4. **Avoid:** Docker Sandbox and Devcontainer - no security benefit over plain Docker, just overhead
@@ -211,16 +212,26 @@ All providers configured with:
 
 **Implementation Recommendation:** Use **dockerode SDK** instead of CLI commands for ~25% faster performance.
 
-## Test Files
+## Key Files
 
-- `benchmark-providers-sdk.mjs` - **SDK-based benchmark (recommended) - uses dockerode for Docker**
-- `benchmark-fair-all-providers.mjs` - CLI-based fair comparison using same image for ALL providers
+### Provider Implementations
+- `packages/sandbox-orbstack/` - Docker provider using **dockerode SDK**
+  - `src/provider.ts` - DockerProvider (uses dockerode for container lifecycle)
+  - `src/sandbox.ts` - DockerSandbox (exec, metrics, cleanup)
+- `packages/sandbox-boxlite/` - BoxLite micro-VM provider (libkrun)
+- `packages/sandbox-apple-container/` - Apple Container full VM provider
+- `packages/sandbox-core/` - Core interfaces and utilities
+
+### Benchmark Scripts
+- `benchmark-providers-sdk.mjs` - **SDK-based benchmark (recommended)**
+- `benchmark-fair-all-providers.mjs` - CLI-based fair comparison
 - `benchmark-devcontainer.mjs` - Devcontainer CLI benchmark
 - `benchmark-dockerode.mjs` - Standalone dockerode benchmark
-- `benchmark-fair-comparison.mjs` - Fair comparison (Docker Direct, OrbStack, Docker Sandbox)
-- `benchmark-all-providers.mjs` - Full benchmark script (BoxLite, OrbStack, AppleContainer)
-- `benchmark-docker-direct.mjs` - Docker CLI baseline benchmark
-- `benchmark-docker-sandbox.mjs` - Docker Sandbox (official AI feature) benchmark
+
+### Dependencies
+- `dockerode` - Docker SDK for Node.js (used by Docker provider)
+- `@boxlite-ai/boxlite` - BoxLite micro-VM runtime
+- `@anthropic-ai/claude-code` - Claude Code CLI (pre-installed in image)
 - `benchmark-memory.mjs` - Memory usage benchmark
 - `test-sdk-with-credsfile.mjs` - SDK test template
 

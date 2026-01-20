@@ -92,15 +92,20 @@ export class BoxLiteProvider implements ISandboxProvider {
     }
 
     // Add environment variables if specified
-    if (config.env) {
-      boxOptions.env = config.env;
+    if (config.env || config.user) {
+      const user = config.user;
+      const userHome = user?.home ?? (user ? `/home/${user.name}` : '/root');
+      boxOptions.env = {
+        ...config.env,
+        HOME: userHome,
+      };
     }
 
     const startTime = performance.now();
-    
+
     // Create SimpleBox instance
     const instance = new module.SimpleBox(boxOptions);
-    
+
     // SimpleBox starts automatically on first exec, but we'll do a probe
     // to ensure it's ready and measure startup time
     try {
@@ -111,16 +116,33 @@ export class BoxLiteProvider implements ISandboxProvider {
       const errMsg = err instanceof Error ? err.message : String(err);
       throw new Error('BoxLite failed to start: ' + errMsg);
     }
-    
+
     const startupMs = performance.now() - startTime;
 
-    return new BoxLiteSandbox({
+    // Determine user config
+    const user = config.user;
+    const userHome = user?.home ?? (user ? `/home/${user.name}` : undefined);
+
+    const sandbox = new BoxLiteSandbox({
       id: config.id,
       instance,
       sshPort: config.sshPort ?? 0,
       mountPath: config.mountPath,
       startupMs,
+      runAsUser: user ? {
+        name: user.name,
+        uid: user.uid ?? 1000,
+        gid: user.gid ?? 1000,
+        home: userHome!,
+      } : undefined,
     });
+
+    // If running as non-root user, set up user environment
+    if (user) {
+      await sandbox.setupUser();
+    }
+
+    return sandbox;
   }
 
   async isAvailable(): Promise<boolean> {

@@ -1,4 +1,5 @@
 import { spawn, execSync } from 'node:child_process';
+import { mkdir } from 'node:fs/promises';
 import type {
   ISandboxProvider,
   ISandbox,
@@ -63,6 +64,10 @@ export class AppleContainerProvider implements ISandboxProvider {
       throw new Error('Apple Container CLI not found. Requires macOS 26+');
     }
 
+    // Determine user home directory
+    const user = config.user;
+    const userHome = user?.home ?? (user ? `/home/${user.name}` : '/root');
+
     const containerConfig: AppleContainerConfig = {
       image: config.image || DEFAULT_IMAGE,
       memory: config.memoryMib ? `${config.memoryMib}m` : '512m',
@@ -72,12 +77,21 @@ export class AppleContainerProvider implements ISandboxProvider {
         [config.mountPath]: '/workspace',
       },
       workdir: '/workspace',
-      env: config.env ?? {},
+      env: {
+        ...config.env,
+        HOME: userHome,
+      },
       name: `sandbox-${config.id}`,
       rm: false, // Don't auto-remove so we can exec into it
     };
 
+    // Note: Don't set uid/gid at container runtime as we need root access
+    // for initial setup. User switching happens via exec wrapper instead.
+
     const startTime = performance.now();
+
+    // Ensure mount path exists
+    await mkdir(config.mountPath, { recursive: true });
 
     // Build container run command
     const args = this.buildRunArgs(containerConfig);
@@ -89,14 +103,27 @@ export class AppleContainerProvider implements ISandboxProvider {
     // Get SSH port if SSH is enabled
     const sshPort = config.sshPort ?? await this.getSshPort(cli, containerId);
 
-    return new AppleContainerSandbox({
+    const sandbox = new AppleContainerSandbox({
       id: config.id,
       containerId,
       containerCli: cli,
       sshPort,
       mountPath: config.mountPath,
       startupMs,
+      runAsUser: user ? {
+        name: user.name,
+        uid: user.uid ?? 1000,
+        gid: user.gid ?? 1000,
+        home: userHome,
+      } : undefined,
     });
+
+    // If running as non-root user, set up user environment
+    if (user) {
+      await sandbox.setupUser();
+    }
+
+    return sandbox;
   }
 
   private buildRunArgs(config: AppleContainerConfig): string[] {
@@ -117,6 +144,18 @@ export class AppleContainerProvider implements ISandboxProvider {
     if (config.ssh) {
       args.push('--ssh');
     }
+
+    // User configuration (run as non-root)
+    if (config.uid !== undefined) {
+      args.push('--uid', String(config.uid));
+    }
+    if (config.gid !== undefined) {
+      args.push('--gid', String(config.gid));
+    }
+
+    // Enable networking with DNS (required for npm/API access)
+    args.push('--network', 'default');
+    args.push('--dns', '8.8.8.8');
 
     if (config.volumes) {
       for (const [hostPath, containerPath] of Object.entries(config.volumes)) {

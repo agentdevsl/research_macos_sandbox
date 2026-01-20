@@ -28,10 +28,12 @@ export class OrbStackProvider implements ISandboxProvider {
     const sshPort = config.sshPort || 2222;
 
     // Create container with bind mount and port mapping
+    // Use tail -f /dev/null to keep container running (standard Docker pattern)
     const container = await this.docker.createContainer({
       Image: image,
       name: `sandbox-${config.id}`,
       Hostname: config.id,
+      Cmd: ['tail', '-f', '/dev/null'],
       Env: Object.entries(config.env || {}).map(([k, v]) => `${k}=${v}`),
       HostConfig: {
         Binds: [`${config.mountPath}:/workspace`],
@@ -52,13 +54,41 @@ export class OrbStackProvider implements ISandboxProvider {
     await container.start();
     const startupMs = performance.now() - startTime;
 
-    return new OrbStackSandbox({
-      id: config.id,
-      container,
-      sshPort,
-      mountPath: config.mountPath,
-      startupMs,
-    });
+    // Build user config if provided (with default uid/gid of 1000)
+    const runAsUser = config.user
+      ? {
+          name: config.user.name,
+          uid: config.user.uid ?? 1000,
+          gid: config.user.gid ?? 1000,
+          home: `/home/${config.user.name}`,
+        }
+      : undefined;
+
+    const sandbox = new OrbStackSandbox(
+      runAsUser
+        ? {
+            id: config.id,
+            container,
+            sshPort,
+            mountPath: config.mountPath,
+            startupMs,
+            runAsUser,
+          }
+        : {
+            id: config.id,
+            container,
+            sshPort,
+            mountPath: config.mountPath,
+            startupMs,
+          }
+    );
+
+    // Set up user if configured
+    if (runAsUser) {
+      await sandbox.setupUser();
+    }
+
+    return sandbox;
   }
 
   async isAvailable(): Promise<boolean> {

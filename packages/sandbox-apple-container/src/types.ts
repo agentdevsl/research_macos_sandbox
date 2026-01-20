@@ -32,6 +32,12 @@ export interface AppleContainerConfig {
   interactive?: boolean;
   /** Allocate TTY */
   tty?: boolean;
+  /** User ID to run as (--uid flag) */
+  uid?: number;
+  /** Group ID to run as (--gid flag) */
+  gid?: number;
+  /** Username for display (informational) */
+  username?: string;
 }
 
 export interface ContainerInfo {

@@ -13,6 +13,13 @@ interface AppleContainerSandboxOptions {
   sshPort: number;
   mountPath: string;
   startupMs: number;
+  /** Run commands as this user instead of root */
+  runAsUser?: {
+    name: string;
+    uid: number;
+    gid: number;
+    home: string;
+  } | undefined;
 }
 
 /**
@@ -30,6 +37,8 @@ export class AppleContainerSandbox implements ISandbox {
   private readonly containerCli: string;
   private sshClient: SSHClient | null = null;
   private metrics: SandboxMetrics;
+  private runAsUser: { name: string; uid: number; gid: number; home: string } | undefined;
+  private userSetupComplete = false;
 
   constructor(options: AppleContainerSandboxOptions) {
     this.id = options.id;
@@ -37,6 +46,7 @@ export class AppleContainerSandbox implements ISandbox {
     this.containerCli = options.containerCli;
     this.sshPort = options.sshPort;
     this.mountPath = options.mountPath;
+    this.runAsUser = options.runAsUser;
     this.metrics = {
       startupMs: options.startupMs,
       sshReadyMs: 0,
@@ -45,8 +55,120 @@ export class AppleContainerSandbox implements ISandbox {
     };
   }
 
-  async exec(cmd: string, args: string[] = []): Promise<ExecResult> {
+  /**
+   * Set up non-root user environment (Debian/Ubuntu style)
+   */
+  async setupUser(): Promise<void> {
+    if (!this.runAsUser || this.userSetupComplete) return;
+
+    const { name, uid, gid, home } = this.runAsUser;
+
+    // Debian uses useradd/groupadd (in /usr/sbin)
+    // Use -o flag to allow non-unique UID/GID (in case image already has users)
+    // node:22-slim has node:node with UID/GID 1000
+    const setupScript = `
+      export PATH=/usr/sbin:/usr/bin:/sbin:/bin:$PATH
+      # Create group (allow non-unique GID with -o)
+      if ! getent group ${name} >/dev/null 2>&1; then
+        /usr/sbin/groupadd -o -g ${gid} ${name} 2>/dev/null || true
+      fi
+      # Create user with home directory (allow non-unique UID with -o)
+      if ! id ${name} >/dev/null 2>&1; then
+        /usr/sbin/useradd -o -u ${uid} -g ${gid} -m -d ${home} -s /bin/sh ${name} 2>/dev/null || true
+      fi
+      # Ensure home exists with correct ownership
+      mkdir -p ${home}
+      chown ${uid}:${gid} ${home}
+      # Create .claude directory
+      mkdir -p ${home}/.claude
+      chown ${uid}:${gid} ${home}/.claude
+      chmod 700 ${home}/.claude
+      # Give user ownership of workspace
+      chown -R ${uid}:${gid} /workspace 2>/dev/null || true
+      # Verify user was created
+      id ${name}
+    `;
+
+    const result = await this.execAsRoot('sh', ['-c', setupScript.trim()]);
+    if (result.exitCode !== 0) {
+      console.error('User setup failed:', result.stderr || result.stdout);
+    }
+    this.userSetupComplete = true;
+  }
+
+  /**
+   * Execute a command as root, bypassing user switching.
+   */
+  async execAsRoot(cmd: string, args: string[] = []): Promise<ExecResult> {
     const fullCmd = args.length > 0 ? [cmd, ...args] : [cmd];
+    const startTime = performance.now();
+
+    return new Promise((resolve) => {
+      const execArgs = ['exec', this.containerId, ...fullCmd];
+
+      const proc = spawn(this.containerCli, execArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data: Buffer) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        const durationMs = performance.now() - startTime;
+        resolve({
+          exitCode: code ?? 0,
+          stdout: stdout.trimEnd(),
+          stderr: stderr.trimEnd(),
+          durationMs,
+        });
+      });
+
+      proc.on('error', (err) => {
+        const durationMs = performance.now() - startTime;
+        resolve({
+          exitCode: 1,
+          stdout: '',
+          stderr: err.message,
+          durationMs,
+        });
+      });
+    });
+  }
+
+  /**
+   * Wrap a command to run as the configured user
+   * Returns a single shell command with proper quoting
+   */
+  private wrapCommandForUser(cmd: string, args: string[]): string[] {
+    if (!this.runAsUser || !this.userSetupComplete) {
+      return args.length > 0 ? [cmd, ...args] : [cmd];
+    }
+
+    // Combine cmd and args into a single command string
+    const fullCmd = args.length > 0 ? `${cmd} ${args.join(' ')}` : cmd;
+    const home = this.runAsUser.home;
+
+    // Escape single quotes in fullCmd for shell
+    const escapedCmd = fullCmd.replace(/'/g, "'\\''");
+
+    // Use su with proper environment setup - return as single shell command
+    return [
+      'sh', '-c',
+      `su -s /bin/sh ${this.runAsUser.name} -c 'export HOME=${home} && cd /workspace && ${escapedCmd}'`
+    ];
+  }
+
+  async exec(cmd: string, args: string[] = []): Promise<ExecResult> {
+    // Wrap command for user if configured
+    const fullCmd = this.wrapCommandForUser(cmd, args);
     const startTime = performance.now();
 
     return new Promise((resolve) => {

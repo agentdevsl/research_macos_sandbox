@@ -13,6 +13,13 @@ interface BoxLiteSandboxOptions {
   startupMs: number;
   /** Initialize npm to use /workspace for packages (avoids rootfs space issues) */
   initializeNpm?: boolean;
+  /** Run commands as this user instead of root */
+  runAsUser?: {
+    name: string;
+    uid: number;
+    gid: number;
+    home: string;
+  } | undefined;
 }
 
 /**
@@ -33,6 +40,8 @@ export class BoxLiteSandbox implements ISandbox {
   private npmInitialized = false;
   private initializeNpmOnStart: boolean;
   private metrics: SandboxMetrics;
+  private runAsUser: { name: string; uid: number; gid: number; home: string } | undefined;
+  private userSetupComplete = false;
 
   constructor(options: BoxLiteSandboxOptions) {
     this.id = options.id;
@@ -40,12 +49,108 @@ export class BoxLiteSandbox implements ISandbox {
     this.sshPort = options.sshPort;
     this.mountPath = options.mountPath;
     this.initializeNpmOnStart = options.initializeNpm ?? true;
+    this.runAsUser = options.runAsUser;
     this.metrics = {
       startupMs: options.startupMs,
       sshReadyMs: 0,
       execLatencyMs: 0,
       memoryBytes: 0,
     };
+  }
+
+  /**
+   * Set up non-root user environment (Alpine Linux style)
+   */
+  async setupUser(): Promise<void> {
+    if (!this.runAsUser || this.userSetupComplete) return;
+
+    const { name, uid, gid, home } = this.runAsUser;
+
+    // Alpine uses adduser/addgroup instead of useradd/groupadd
+    // Run these commands as root (before user switching is active)
+    const setupScript = `
+      # Create group
+      addgroup -g ${gid} ${name} 2>/dev/null || true
+      # Create user with home directory
+      adduser -D -u ${uid} -G ${name} -h ${home} -s /bin/sh ${name} 2>/dev/null || true
+      # Ensure home exists with correct ownership
+      mkdir -p ${home}
+      chown -R ${uid}:${gid} ${home}
+      # Create .claude directory
+      mkdir -p ${home}/.claude
+      chown ${uid}:${gid} ${home}/.claude
+      chmod 700 ${home}/.claude
+      # Create npm cache directory with correct ownership
+      mkdir -p ${home}/.npm
+      chown -R ${uid}:${gid} ${home}/.npm
+      # Give user ownership of workspace and all its contents
+      chown -R ${uid}:${gid} /workspace
+    `;
+
+    await this.instance.exec('sh', '-c', setupScript.trim());
+    this.userSetupComplete = true;
+  }
+
+  /**
+   * Wrap a command to run as the configured user
+   */
+  private wrapCommandForUser(cmd: string, args: string[]): { cmd: string; args: string[] } {
+    if (!this.runAsUser || !this.userSetupComplete) {
+      return { cmd, args };
+    }
+
+    // Combine cmd and args into a single command string, then wrap with su
+    const fullCmd = args.length > 0 ? `${cmd} ${args.join(' ')}` : cmd;
+    const home = this.runAsUser.home;
+
+    // Use su with proper environment setup
+    return {
+      cmd: 'su',
+      args: [
+        '-s', '/bin/sh',
+        this.runAsUser.name,
+        '-c',
+        `export HOME=${home} && export PATH=/workspace/.npm-global/bin:$PATH && cd /workspace && ${fullCmd}`
+      ]
+    };
+  }
+
+  /**
+   * Execute a command as root, bypassing user switching.
+   * Use this for system-level operations like package installation.
+   */
+  async execAsRoot(cmd: string, args: string[] = []): Promise<ExecResult> {
+    if (this.stopped) {
+      return {
+        exitCode: 1,
+        stdout: '',
+        stderr: 'Sandbox has been stopped',
+        durationMs: 0,
+      };
+    }
+
+    const startTime = performance.now();
+
+    try {
+      // Don't wrap with user switching
+      const result = await this.instance.exec(cmd, ...args);
+      const durationMs = performance.now() - startTime;
+
+      return {
+        exitCode: result.exitCode,
+        stdout: result.stdout.trimEnd(),
+        stderr: result.stderr.trimEnd(),
+        durationMs,
+      };
+    } catch (err) {
+      const durationMs = performance.now() - startTime;
+      return {
+        exitCode: 1,
+        stdout: '',
+        stderr: err instanceof Error ? err.message : String(err),
+        durationMs,
+      };
+    }
   }
 
   /**
@@ -61,9 +166,15 @@ export class BoxLiteSandbox implements ISandbox {
     if (this.npmInitialized) return;
 
     try {
-      // Create directories
-      await this.instance.exec('mkdir', '-p', '/workspace/node_modules');
-      await this.instance.exec('mkdir', '-p', '/workspace/.npm-global/bin');
+      // Create directories - use execAsRoot to ensure proper permissions
+      await this.execAsRoot('mkdir', ['-p', '/workspace/node_modules']);
+      await this.execAsRoot('mkdir', ['-p', '/workspace/.npm-global/bin']);
+
+      // If running as non-root user, set ownership
+      if (this.runAsUser) {
+        const { uid, gid } = this.runAsUser;
+        await this.execAsRoot('chown', ['-R', `${uid}:${gid}`, '/workspace']);
+      }
 
       // Configure npm to use /workspace for global packages
       await this.instance.exec('npm', 'config', 'set', 'prefix', '/workspace/.npm-global');
@@ -127,8 +238,11 @@ export class BoxLiteSandbox implements ISandbox {
     const startTime = performance.now();
 
     try {
+      // Wrap command to run as user if configured
+      const wrapped = this.wrapCommandForUser(cmd, args);
+
       // SimpleBox.exec takes command and args separately
-      const result = await this.instance.exec(cmd, ...args);
+      const result = await this.instance.exec(wrapped.cmd, ...wrapped.args);
       const durationMs = performance.now() - startTime;
 
       // Cache the box ID after first successful exec (lazy initialization)

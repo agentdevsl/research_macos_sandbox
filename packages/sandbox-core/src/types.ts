@@ -1,4 +1,18 @@
 /**
+ * User configuration for running sandbox as non-root
+ */
+export interface SandboxUser {
+  /** Username */
+  name: string;
+  /** User ID (default: 1000) */
+  uid?: number;
+  /** Group ID (default: 1000) */
+  gid?: number;
+  /** Home directory (default: /home/{name}) */
+  home?: string;
+}
+
+/**
  * Configuration for creating a sandbox instance
  */
 export interface SandboxConfig {
@@ -16,6 +30,8 @@ export interface SandboxConfig {
   cpus?: number;
   /** Environment variables to pass */
   env?: Record<string, string>;
+  /** Run as non-root user (recommended for SDK with bypassPermissions) */
+  user?: SandboxUser;
 }
 
 /**

@@ -7,11 +7,29 @@
 
 | Provider | SDK | CLI | Startup | 5 Concurrent | Memory/Instance |
 |----------|-----|-----|---------|--------------|-----------------|
+| **Docker Direct** | ✅ | ✅ | 198ms | ✅ 24s | 17 MB |
 | **OrbStack** | ✅ | ✅ | 131ms | ✅ 40s | 146 MB |
 | **BoxLite** | ✅ | ❌ | 423ms | ❌ | ~150 MB |
 | **AppleContainer** | ✅ | ❌ | 4643ms | ✅ 52s | N/A |
 
 ## Detailed Results
+
+### Docker Direct (docker CLI baseline)
+
+**Baseline test using docker CLI directly**
+
+- **Startup:** 198ms
+- **SDK Test:** ✅ SUCCESS (exec: 4.3s)
+- **CLI Test:** ✅ SUCCESS (exec: 7.2s)
+- **5 Concurrent:** ✅ SUCCESS (total: 24s, avg startup: 446ms)
+- **Memory:** 17 MB per instance (lower due to measurement timing)
+
+```
+Docker version 29.1.3
+Image: alpine:latest
+```
+
+**Note:** Direct docker CLI benchmark for comparison. Uses same authentication method (credentials file via host mount).
 
 ### OrbStack (Docker Container)
 
@@ -97,15 +115,20 @@ All providers configured with:
 
 ```json
 {
-  "BoxLite": {
-    "sdk": { "success": true, "startupMs": 423, "execMs": 20433 },
-    "cli": { "success": false, "startupMs": 314, "execMs": 120494 },
-    "concurrent": { "success": false, "instances": 5, "totalMs": 10772 }
+  "DockerDirect": {
+    "sdk": { "success": true, "startupMs": 198, "execMs": 4286 },
+    "cli": { "success": true, "startupMs": 198, "execMs": 7171 },
+    "concurrent": { "success": true, "instances": 5, "totalMs": 23524, "avgMemoryMb": 16.8 }
   },
   "OrbStack": {
     "sdk": { "success": true, "startupMs": 151, "execMs": 3816 },
     "cli": { "success": true, "startupMs": 123, "execMs": 3954 },
     "concurrent": { "success": true, "instances": 5, "totalMs": 39772, "avgMemoryMb": 146.3 }
+  },
+  "BoxLite": {
+    "sdk": { "success": true, "startupMs": 423, "execMs": 20433 },
+    "cli": { "success": false, "startupMs": 314, "execMs": 120494 },
+    "concurrent": { "success": false, "instances": 5, "totalMs": 10772 }
   },
   "AppleContainer": {
     "sdk": { "success": true, "startupMs": 4643, "execMs": 7945 },
